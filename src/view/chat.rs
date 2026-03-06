@@ -1,13 +1,13 @@
 use crossterm::event::KeyCode;
 use ratatui::{
+  Frame,
   layout::{Constraint, Direction, Layout},
   style::{Color, Style},
   text::Text,
   widgets::{Block, Borders, Clear, Paragraph, Wrap},
-  Frame,
 };
 
-use crate::app::App;
+use crate::app::AppData;
 use crate::view::View;
 
 /// Chat view state
@@ -29,7 +29,8 @@ impl ChatView {
 
   /// Get byte position from character position
   fn char_pos_to_byte_pos(&self, char_pos: usize) -> usize {
-    self.input
+    self
+      .input
       .char_indices()
       .nth(char_pos)
       .map(|(i, _)| i)
@@ -85,24 +86,24 @@ impl ChatView {
   }
 
   /// Submit the current input as a message
-  pub fn submit_message(&mut self, app: &mut App) {
+  pub fn submit_message(&mut self, data: &mut AppData) {
     if !self.input.is_empty() {
       let message = std::mem::take(&mut self.input);
-      app.messages.push(format!("You: {}", message));
+      data.messages.push(format!("You: {}", message));
       self.cursor_position = 0;
     }
   }
 }
 
 impl View for ChatView {
-  fn handle_key(&mut self, app: &mut App, key: KeyCode) -> Option<Box<dyn View>> {
+  fn handle_key(&mut self, data: &mut AppData, key: KeyCode) -> Option<Box<dyn View>> {
     match key {
       KeyCode::Esc => {
         // Return to home view
         return Some(Box::new(crate::view::HomeView::new()));
       }
       KeyCode::Enter => {
-        self.submit_message(app);
+        self.submit_message(data);
       }
       KeyCode::Backspace => {
         self.backspace();
@@ -130,7 +131,7 @@ impl View for ChatView {
     None
   }
 
-  fn draw(&self, f: &mut Frame, app: &App) {
+  fn draw(&self, f: &mut Frame, data: &AppData) {
     let area = f.area();
 
     // Clear the background
@@ -146,10 +147,10 @@ impl View for ChatView {
       .split(area);
 
     // Render message display area
-    let messages_text = if app.messages.is_empty() {
+    let messages_text = if data.messages.is_empty() {
       Text::from("Type a message and press Enter to send, ESC to go back\n")
     } else {
-      Text::from(app.messages.join("\n"))
+      Text::from(data.messages.join("\n"))
     };
 
     let messages_widget = Paragraph::new(messages_text)
@@ -177,14 +178,19 @@ impl View for ChatView {
 
     // Set cursor position
     // Calculate display width (accounting for wide characters)
-    let display_width: usize = self.input.chars().take(self.cursor_position).map(|c| {
-      // CJK characters are width 2, others are width 1
-      if c >= '\u{4e00}' && c <= '\u{9fff}' {
-        2
-      } else {
-        1
-      }
-    }).sum();
+    let display_width: usize = self
+      .input
+      .chars()
+      .take(self.cursor_position)
+      .map(|c| {
+        // CJK characters are width 2, others are width 1
+        if c >= '\u{4e00}' && c <= '\u{9fff}' {
+          2
+        } else {
+          1
+        }
+      })
+      .sum();
     let cursor_x = chunks[1].x + display_width as u16 + 2;
     let cursor_y = chunks[1].y + 1;
     f.set_cursor_position((cursor_x, cursor_y));

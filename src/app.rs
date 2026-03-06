@@ -1,41 +1,57 @@
 use crate::view::{HomeView, View};
 
-/// Application state
-pub struct App {
+/// Application data that can be modified by views
+pub struct AppData {
   /// Whether the app should exit
   pub should_exit: bool,
-  /// Current view (dynamic dispatch)
-  pub view: Box<dyn View>,
   /// Message history (for chat)
   pub messages: Vec<String>,
+}
+
+impl AppData {
+  /// Create a new app data instance
+  pub fn new() -> Self {
+    Self {
+      should_exit: false,
+      messages: Vec::new(),
+    }
+  }
+}
+
+impl Default for AppData {
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
+/// Application state
+pub struct App {
+  /// Application data
+  pub data: AppData,
+  /// Current view (dynamic dispatch)
+  pub view: Box<dyn View>,
 }
 
 impl App {
   /// Create a new app instance
   pub fn new() -> Self {
     Self {
-      should_exit: false,
+      data: AppData::new(),
       view: Box::new(HomeView::new()),
-      messages: Vec::new(),
     }
   }
 
   /// Handle keyboard events
   pub fn handle_key(&mut self, key: crossterm::event::KeyCode) {
-    // Take ownership of the view temporarily
-    let mut view = std::mem::replace(&mut self.view, Box::new(NullView));
-    
-    // Handle the key and check if we need to switch views
-    if let Some(new_view) = view.handle_key(self, key) {
+    // Now we can borrow view and data separately
+    if let Some(new_view) = self.view.handle_key(&mut self.data, key) {
       self.view = new_view;
-    } else {
-      self.view = view;
     }
   }
 
   /// Draw the current view
   pub fn draw(&self, f: &mut ratatui::Frame) {
-    self.view.draw(f, self);
+    self.view.draw(f, &self.data);
   }
 }
 
@@ -43,15 +59,4 @@ impl Default for App {
   fn default() -> Self {
     Self::new()
   }
-}
-
-/// A null view placeholder used during view swapping
-struct NullView;
-
-impl View for NullView {
-  fn handle_key(&mut self, _app: &mut App, _key: crossterm::event::KeyCode) -> Option<Box<dyn View>> {
-    None
-  }
-
-  fn draw(&self, _f: &mut ratatui::Frame, _app: &App) {}
 }

@@ -1,13 +1,13 @@
 use crossterm::event::KeyCode;
 use ratatui::{
+  Frame,
   layout::{Alignment, Constraint, Direction, Layout, Rect},
   style::{Color, Modifier, Style},
   text::{Line, Span, Text},
   widgets::{Block, Borders, Clear, Paragraph},
-  Frame,
 };
 
-use crate::app::App;
+use crate::app::AppData;
 use crate::view::{ChatView, View};
 
 /// Home view state
@@ -29,7 +29,8 @@ impl HomeView {
 
   /// Get byte position from character position
   fn char_pos_to_byte_pos(&self, char_pos: usize) -> usize {
-    self.input
+    self
+      .input
       .char_indices()
       .nth(char_pos)
       .map(|(i, _)| i)
@@ -100,30 +101,25 @@ impl HomeView {
   fn render_title(&self, f: &mut Frame, area: Rect) {
     let title_text = Text::from(vec![
       Line::from(""),
-      Line::from(vec![
-        Span::styled(
-          "Talos",
-          Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
-        ),
-      ])
+      Line::from(vec![Span::styled(
+        "Talos",
+        Style::default()
+          .fg(Color::Cyan)
+          .add_modifier(Modifier::BOLD),
+      )])
       .alignment(Alignment::Center),
-      Line::from(
-        Span::styled(
-          "AI Coding Agent",
-          Style::default().fg(Color::Gray),
-        ),
-      )
+      Line::from(Span::styled(
+        "AI Coding Agent",
+        Style::default().fg(Color::Gray),
+      ))
       .alignment(Alignment::Center),
     ]);
 
-    let title = Paragraph::new(title_text)
-      .block(
-        Block::default()
-          .borders(Borders::ALL)
-          .border_style(Style::default().fg(Color::Cyan)),
-      );
+    let title = Paragraph::new(title_text).block(
+      Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan)),
+    );
 
     f.render_widget(title, area);
   }
@@ -152,23 +148,22 @@ impl HomeView {
       Span::raw(" to exit"),
     ]));
 
-    let status_bar = Paragraph::new(status_text)
-      .style(Style::default().fg(Color::Gray));
+    let status_bar = Paragraph::new(status_text).style(Style::default().fg(Color::Gray));
 
     f.render_widget(status_bar, area);
   }
 }
 
 impl View for HomeView {
-  fn handle_key(&mut self, app: &mut App, key: KeyCode) -> Option<Box<dyn View>> {
+  fn handle_key(&mut self, data: &mut AppData, key: KeyCode) -> Option<Box<dyn View>> {
     match key {
       KeyCode::Esc => {
-        app.should_exit = true;
+        data.should_exit = true;
       }
       KeyCode::Enter => {
         if !self.is_input_empty() {
           let input = self.take_input();
-          app.messages.push(format!("You: {}", input));
+          data.messages.push(format!("You: {}", input));
           // Switch to ChatView
           return Some(Box::new(ChatView::new()));
         }
@@ -199,7 +194,7 @@ impl View for HomeView {
     None
   }
 
-  fn draw(&self, f: &mut Frame, _app: &App) {
+  fn draw(&self, f: &mut Frame, _data: &AppData) {
     let area = f.area();
 
     // Clear the background
@@ -209,9 +204,9 @@ impl View for HomeView {
     let main_chunks = Layout::default()
       .direction(Direction::Vertical)
       .constraints([
-        Constraint::Length(5),  // Title area
-        Constraint::Length(3),  // Chat input box
-        Constraint::Length(1),  // Status bar
+        Constraint::Length(5), // Title area
+        Constraint::Length(3), // Chat input box
+        Constraint::Length(1), // Status bar
       ])
       .split(area);
 
@@ -226,9 +221,18 @@ impl View for HomeView {
 
     // Set cursor position in input box
     // Calculate display width (CJK characters are width 2, others are width 1)
-    let display_width: usize = self.input.chars().take(self.cursor_position).map(|c| {
-      if c >= '\u{4e00}' && c <= '\u{9fff}' { 2 } else { 1 }
-    }).sum();
+    let display_width: usize = self
+      .input
+      .chars()
+      .take(self.cursor_position)
+      .map(|c| {
+        if c >= '\u{4e00}' && c <= '\u{9fff}' {
+          2
+        } else {
+          1
+        }
+      })
+      .sum();
     let input_chunk = main_chunks[1];
     let cursor_x = input_chunk.x + display_width as u16 + 2;
     let cursor_y = input_chunk.y + 1;
@@ -241,5 +245,3 @@ impl Default for HomeView {
     Self::new()
   }
 }
-
-

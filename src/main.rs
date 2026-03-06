@@ -59,7 +59,7 @@ where
     }
 
     // Check if we should exit
-    if app.should_exit {
+    if app.data.should_exit {
       return Ok(());
     }
   }
