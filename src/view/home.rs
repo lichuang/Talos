@@ -1,4 +1,4 @@
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
   Frame,
   layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -8,6 +8,7 @@ use ratatui::{
 };
 
 use crate::app::AppData;
+use crate::utils::prefix_display_width;
 use crate::view::{ChatView, View};
 
 /// Home view state
@@ -155,9 +156,16 @@ impl HomeView {
 }
 
 impl View for HomeView {
-  fn handle_key(&mut self, data: &mut AppData, key: KeyCode) -> Option<Box<dyn View>> {
-    match key {
+  fn handle_key(&mut self, data: &mut AppData, key: KeyEvent) -> Option<Box<dyn View>> {
+    match key.code {
       KeyCode::Esc => {
+        data.should_exit = true;
+      }
+      KeyCode::Char('d')
+        if key
+          .modifiers
+          .contains(crossterm::event::KeyModifiers::CONTROL) =>
+      {
         data.should_exit = true;
       }
       KeyCode::Enter => {
@@ -221,18 +229,7 @@ impl View for HomeView {
 
     // Set cursor position in input box
     // Calculate display width (CJK characters are width 2, others are width 1)
-    let display_width: usize = self
-      .input
-      .chars()
-      .take(self.cursor_position)
-      .map(|c| {
-        if c >= '\u{4e00}' && c <= '\u{9fff}' {
-          2
-        } else {
-          1
-        }
-      })
-      .sum();
+    let display_width = prefix_display_width(&self.input, self.cursor_position);
     let input_chunk = main_chunks[1];
     let cursor_x = input_chunk.x + display_width as u16 + 2;
     let cursor_y = input_chunk.y + 1;

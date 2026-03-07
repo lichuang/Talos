@@ -1,4 +1,5 @@
 mod app;
+mod utils;
 mod view;
 
 use anyhow::Result;
@@ -54,7 +55,7 @@ where
     if let Event::Key(key) = event::read()? {
       // Only handle key press events to avoid duplicate processing
       if key.kind == KeyEventKind::Press {
-        app.handle_key(key.code);
+        app.handle_key(key);
       }
     }
 

@@ -1,4 +1,4 @@
-use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
 use ratatui::Frame;
 
 use crate::app::AppData;
@@ -20,7 +20,7 @@ pub trait View {
   /// # Returns
   /// * `Some(Box<dyn View>)` - If the view wants to switch to a new view
   /// * `None` - If no view switch is needed
-  fn handle_key(&mut self, data: &mut AppData, key: KeyCode) -> Option<Box<dyn View>>;
+  fn handle_key(&mut self, data: &mut AppData, key: KeyEvent) -> Option<Box<dyn View>>;
 
   /// Draw the view on the frame
   ///

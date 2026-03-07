@@ -42,7 +42,7 @@ impl App {
   }
 
   /// Handle keyboard events
-  pub fn handle_key(&mut self, key: crossterm::event::KeyCode) {
+  pub fn handle_key(&mut self, key: crossterm::event::KeyEvent) {
     // Now we can borrow view and data separately
     if let Some(new_view) = self.view.handle_key(&mut self.data, key) {
       self.view = new_view;

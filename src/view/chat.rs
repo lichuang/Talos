@@ -1,14 +1,15 @@
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
   Frame,
   layout::{Constraint, Direction, Layout, Rect},
   style::{Color, Style},
   symbols::border,
-  text::{Line, Span},
+  text::{Line, Span, Text},
   widgets::{Block, Borders, Paragraph, Wrap},
 };
 
 use crate::app::AppData;
+use crate::utils::{char_display_width, string_display_width};
 use crate::view::View;
 
 /// Chat view state
@@ -113,14 +114,130 @@ impl ChatView {
     }
   }
 
-  /// Render an input line (prompt + input)
+  /// Calculate display width of a string (CJK characters are width 2)
+  fn display_width(s: &str) -> usize {
+    string_display_width(s)
+  }
+
+  /// Wrap text into lines based on available width
+  fn wrap_text(text: &str, available_width: u16) -> Vec<String> {
+    if available_width == 0 {
+      return vec![text.to_string()];
+    }
+    let available = available_width as usize;
+    let mut lines: Vec<String> = vec![];
+    let mut current_line = String::new();
+    let mut current_width = 0;
+
+    for c in text.chars() {
+      let char_width = char_display_width(c);
+
+      if c == '\n' {
+        lines.push(current_line);
+        current_line = String::new();
+        current_width = 0;
+      } else if current_width + char_width > available {
+        lines.push(current_line);
+        current_line = c.to_string();
+        current_width = char_width;
+      } else {
+        current_line.push(c);
+        current_width += char_width;
+      }
+    }
+
+    if !current_line.is_empty() {
+      lines.push(current_line);
+    }
+
+    lines
+  }
+
+  /// Calculate the number of lines needed to display text with given width
+  fn calculate_line_count(text: &str, available_width: u16) -> usize {
+    Self::wrap_text(text, available_width).len().max(1)
+  }
+
+  /// Calculate the number of lines needed to display text with prefix (like prompt) and given width
+  fn calculate_line_count_with_prefix(
+    text: &str,
+    prefix_width: usize,
+    available_width: u16,
+  ) -> usize {
+    if available_width == 0 {
+      return 1;
+    }
+    let available = available_width as usize;
+    let mut lines = 1;
+    let mut current_width = prefix_width;
+
+    for c in text.chars() {
+      let char_width = char_display_width(c);
+
+      if c == '\n' {
+        lines += 1;
+        current_width = 0;
+      } else if current_width + char_width > available {
+        lines += 1;
+        current_width = char_width;
+      } else {
+        current_width += char_width;
+      }
+    }
+
+    lines
+  }
+
+  /// Calculate the number of lines needed to display prompt + text with given width
+  fn calculate_input_line_count(&self, text: &str, available_width: u16) -> usize {
+    let prompt_width = Self::display_width(&self.prompt);
+    Self::calculate_line_count_with_prefix(text, prompt_width, available_width)
+  }
+
+  /// Find cursor position (line number and column within that line)
+  fn find_cursor_position(&self, available_width: u16) -> (usize, usize) {
+    if available_width == 0 {
+      return (0, 0);
+    }
+    let available = available_width as usize;
+    let prompt_width = Self::display_width(&self.prompt);
+
+    let mut line = 0;
+    let mut col = prompt_width; // Start after prompt
+    let mut current_line_width = prompt_width;
+
+    for (idx, c) in self.input.chars().enumerate() {
+      if idx >= self.cursor_position {
+        break;
+      }
+
+      let char_width = char_display_width(c);
+
+      if c == '\n' {
+        line += 1;
+        col = 0;
+        current_line_width = 0;
+      } else if current_line_width + char_width > available {
+        line += 1;
+        col = char_width;
+        current_line_width = char_width;
+      } else {
+        col = current_line_width + char_width;
+        current_line_width += char_width;
+      }
+    }
+
+    (line, col)
+  }
+
+  /// Render an input line (prompt + input) with wrapping
   fn render_input_line(&self, f: &mut Frame, area: Rect, input: &str) {
-    let prompt_span = Span::styled(&self.prompt, Style::default().fg(Color::Green));
-    let input_span = Span::raw(input);
+    let text = Text::from(vec![Line::from(vec![
+      Span::styled(&self.prompt, Style::default().fg(Color::Green)),
+      Span::raw(input),
+    ])]);
 
-    let line = Line::from(vec![prompt_span, input_span]);
-    let widget = Paragraph::new(line);
-
+    let widget = Paragraph::new(text).wrap(Wrap { trim: false });
     f.render_widget(widget, area);
   }
 
@@ -136,21 +253,36 @@ impl ChatView {
     // Render the border block
     f.render_widget(block, area);
 
-    // Render the message text inside
-    let text = Paragraph::new(message).wrap(Wrap { trim: true });
+    // Manually wrap text to ensure consistency with line count calculation
+    let inner_width = inner_area.width;
+    let wrapped_lines = Self::wrap_text(message, inner_width);
+
+    // Convert to Lines for rendering
+    let lines: Vec<Line> = wrapped_lines.into_iter().map(Line::from).collect();
+
+    let text = Paragraph::new(Text::from(lines));
     f.render_widget(text, inner_area);
   }
 }
 
 impl View for ChatView {
-  fn handle_key(&mut self, data: &mut AppData, key: KeyCode) -> Option<Box<dyn View>> {
-    match key {
+  fn handle_key(&mut self, data: &mut AppData, key: KeyEvent) -> Option<Box<dyn View>> {
+    match key.code {
       KeyCode::Esc => {
         // Return to home view
         return Some(Box::new(crate::view::HomeView::new()));
       }
+      KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        data.should_exit = true;
+      }
       KeyCode::Enter => {
-        self.submit_message(data);
+        // Shift+Enter or Alt+Enter to insert newline, Enter alone to submit
+        if key.modifiers.contains(KeyModifiers::SHIFT) || key.modifiers.contains(KeyModifiers::ALT)
+        {
+          self.insert_char('\n');
+        } else {
+          self.submit_message(data);
+        }
       }
       KeyCode::Backspace => {
         self.backspace();
@@ -171,6 +303,8 @@ impl View for ChatView {
         self.move_cursor_end();
       }
       KeyCode::Char(c) => {
+        // Handle Ctrl+C for copy, Ctrl+V for paste if needed
+        // For now, just insert the character if it's not a control char
         self.insert_char(c);
       }
       _ => {}
@@ -180,23 +314,49 @@ impl View for ChatView {
 
   fn draw(&self, f: &mut Frame, data: &AppData) {
     let area = f.area();
+    let available_width = area.width;
+
+    // Calculate input height (dynamic based on content, including prompt width)
+    let input_height = self.calculate_input_line_count(&self.input, available_width);
+    // Ensure at least 1 line and cap at reasonable max (e.g., 10 lines or half screen)
+    let max_input_height = std::cmp::min(10, area.height / 2).max(1) as usize;
+    let input_height = input_height.min(max_input_height);
 
     // Calculate layout:
-    // For each message: 1 line (prompt + input) + 3 lines (box) = 4 lines
-    // For current input: 1 line
-    let message_count = data.messages.len();
-    let history_lines = message_count * 4; // Each message takes 4 lines
-    let total_lines = history_lines + 1; // +1 for current input
+    // For each message: dynamic lines (prompt + wrapped input) + dynamic lines for box
+    // For current input: dynamic lines
+    let mut constraints: Vec<Constraint> = Vec::new();
 
-    // Build constraints
-    let mut constraints: Vec<Constraint> = (0..message_count)
-      .flat_map(|_| vec![Constraint::Length(1), Constraint::Length(3)])
-      .collect();
-    constraints.push(Constraint::Length(1)); // Current input line
+    // History messages
+    // Box has borders on both sides, so inner width is available_width - 2
+    let box_inner_width = available_width.saturating_sub(2);
+    for message in &data.messages {
+      // Prompt line height (prompt + message)
+      let prompt_lines = self.calculate_input_line_count(message, available_width);
+      constraints.push(Constraint::Length(prompt_lines as u16));
+      // Box height = border top (1) + content lines + border bottom (1)
+      let box_content_lines = Self::calculate_line_count(message, box_inner_width);
+      let box_height = box_content_lines + 2; // +2 for top and bottom borders
+      constraints.push(Constraint::Length(box_height as u16));
+    }
+
+    // Current input
+    constraints.push(Constraint::Length(input_height as u16));
 
     // Add remaining space
+    let prompt_width = Self::display_width(&self.prompt);
+    let total_fixed_height: usize = data
+      .messages
+      .iter()
+      .map(|m| {
+        Self::calculate_line_count_with_prefix(m, prompt_width, available_width)
+          + Self::calculate_line_count(m, box_inner_width)
+          + 2
+      })
+      .sum::<usize>()
+      + input_height;
     let available_height = area.height as usize;
-    if total_lines < available_height {
+    if total_fixed_height < available_height {
       constraints.push(Constraint::Min(0));
     }
 
@@ -224,34 +384,17 @@ impl View for ChatView {
     if chunk_idx < chunks.len() {
       self.render_input_line(f, chunks[chunk_idx], &self.input);
 
-      // Set cursor position (after the prompt + input position)
-      let prompt_display_width: usize = self
-        .prompt
-        .chars()
-        .map(|c| {
-          if c >= '\u{4e00}' && c <= '\u{9fff}' {
-            2
-          } else {
-            1
-          }
-        })
-        .sum();
+      // Set cursor position
+      let (cursor_line, cursor_col) = self.find_cursor_position(available_width);
+      let cursor_x = chunks[chunk_idx].x + cursor_col as u16;
+      let cursor_y = chunks[chunk_idx].y + cursor_line as u16;
 
-      let input_display_width: usize = self
-        .input
-        .chars()
-        .take(self.cursor_position)
-        .map(|c| {
-          if c >= '\u{4e00}' && c <= '\u{9fff}' {
-            2
-          } else {
-            1
-          }
-        })
-        .sum();
+      // Ensure cursor is within bounds
+      let max_x = chunks[chunk_idx].x + chunks[chunk_idx].width;
+      let max_y = chunks[chunk_idx].y + chunks[chunk_idx].height;
+      let cursor_x = cursor_x.min(max_x.saturating_sub(1));
+      let cursor_y = cursor_y.min(max_y.saturating_sub(1));
 
-      let cursor_x = chunks[chunk_idx].x + prompt_display_width as u16 + input_display_width as u16;
-      let cursor_y = chunks[chunk_idx].y;
       f.set_cursor_position((cursor_x, cursor_y));
     }
   }
