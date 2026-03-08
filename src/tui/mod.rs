@@ -1,7 +1,7 @@
-//! TUI infrastructure module.
+//! Terminal UI infrastructure.
 //!
-//! This module provides the core infrastructure for running an async event-driven TUI,
-//! inspired by the codex-rs architecture.
+//! Provides the building blocks for an async event-driven terminal interface,
+//! including frame scheduling and unified event handling.
 
 use std::io::Stdout;
 use std::io::stdout;
@@ -18,7 +18,7 @@ mod event_stream;
 mod frame_rate_limiter;
 mod frame_requester;
 
-pub use event_stream::EventBroker;
+pub use event_stream::TuiEventBroker;
 pub use event_stream::TuiEventStream;
 pub use frame_requester::FrameRequester;
 
@@ -41,7 +41,7 @@ pub struct Tui {
   terminal: Terminal<CrosstermBackend<Stdout>>,
   frame_requester: FrameRequester,
   draw_tx: broadcast::Sender<()>,
-  event_broker: Arc<EventBroker>,
+  event_broker: Arc<TuiEventBroker>,
   terminal_focused: Arc<AtomicBool>,
 }
 
@@ -49,7 +49,7 @@ impl Tui {
   /// Create a new TUI instance.
   pub fn new() -> Result<Self> {
     let terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
-    let event_broker = Arc::new(EventBroker::new());
+    let event_broker = Arc::new(TuiEventBroker::new());
     let terminal_focused = Arc::new(AtomicBool::new(true));
 
     // Create a broadcast channel for draw events

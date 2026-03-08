@@ -1,38 +1,41 @@
-//! Limits how frequently frame draw notifications may be emitted.
+//! Frame rate limiting to prevent excessive redraws.
 //!
-//! Widgets sometimes call `FrameRequester::schedule_frame()` more frequently than a user can
-//! perceive. This limiter clamps draw notifications to a maximum of 120 FPS to avoid wasted work.
+//! When widgets request frequent redraws (e.g., for animations), they may
+//! trigger more renders than the user can perceive. This module enforces
+//! a maximum frame rate to avoid wasting CPU and battery.
 //!
-//! This is intentionally a small, pure helper so it can be unit-tested in isolation and used by
-//! the async frame scheduler without adding complexity to the app/event loop.
+//! The implementation is kept simple and self-contained for easy testing.
 
 use std::time::Duration;
 use std::time::Instant;
 
-/// A 120 FPS minimum frame interval (≈8.33ms).
+/// Minimum time between frames at 120 FPS (~8.33ms).
 pub(super) const MIN_FRAME_INTERVAL: Duration = Duration::from_nanos(8_333_334);
 
-/// Remembers the most recent emitted draw, allowing deadlines to be clamped forward.
+/// Tracks when the last frame was drawn and enforces rate limits.
 #[derive(Debug, Default)]
 pub(super) struct FrameRateLimiter {
-  last_emitted_at: Option<Instant>,
+  last_draw_time: Option<Instant>,
 }
 
 impl FrameRateLimiter {
-  /// Returns `requested`, clamped forward if it would exceed the maximum frame rate.
+  /// Adjust a requested draw time to respect the frame rate limit.
+  ///
+  /// If the requested time is too soon after the last draw,
+  /// returns a delayed time that satisfies the minimum interval.
   pub(super) fn clamp_deadline(&self, requested: Instant) -> Instant {
-    let Some(last_emitted_at) = self.last_emitted_at else {
+    let Some(last_draw) = self.last_draw_time else {
       return requested;
     };
-    let min_allowed = last_emitted_at
+    let earliest_allowed = last_draw
       .checked_add(MIN_FRAME_INTERVAL)
-      .unwrap_or(last_emitted_at);
-    requested.max(min_allowed)
+      .unwrap_or(last_draw);
+    requested.max(earliest_allowed)
   }
 
-  /// Records that a draw notification was emitted at `emitted_at`.
+  /// Record that a frame was drawn at the given time.
   pub(super) fn mark_emitted(&mut self, emitted_at: Instant) {
-    self.last_emitted_at = Some(emitted_at);
+    self.last_draw_time = Some(emitted_at);
   }
 }
 

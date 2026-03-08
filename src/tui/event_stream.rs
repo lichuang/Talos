@@ -1,19 +1,15 @@
-//! Event stream plumbing for the TUI.
+//! Event handling for the terminal UI.
 //!
-//! - [`EventBroker`] holds the shared crossterm stream so multiple callers reuse the same
-//!   input source and can drop/recreate it on pause/resume without rebuilding consumers.
-//! - [`TuiEventStream`] wraps a draw event subscription plus the shared [`EventBroker`] and maps crossterm
-//!   events into [`TuiEvent`].
-//! - [`EventSource`] abstracts the underlying event producer; the real implementation is
-//!   [`CrosstermEventSource`] and tests can swap in [`FakeEventSource`].
+//! This module combines input events (keyboard, resize, etc.) with
+//! application-generated draw events into a single stream that the
+//! main loop can process.
 //!
-//! The motivation for dropping/recreating the crossterm event stream is to enable the TUI to fully relinquish stdin.
-//! If the stream is not dropped, it will continue to read from stdin even if it is not actively being polled
-//! (due to how crossterm's EventStream is implemented), potentially stealing input from other processes reading stdin,
-//! like terminal text editors. This race can cause missed input or capturing terminal query responses (for example, OSC palette/size queries)
-//! that the other process expects to read. Stopping polling, instead of dropping the stream, is only sufficient when the
-//! pause happens before the stream enters a pending state; otherwise the crossterm reader thread may keep reading
-//! from stdin, so the safer approach is to drop and recreate the event stream when we need to hand off the terminal.
+//! Components:
+//! - `EventBroker`: Manages access to the underlying terminal input stream,
+//!   allowing it to be paused and resumed (useful when handing off control
+//!   to external programs like editors)
+//! - `TuiEventStream`: The main event stream that yields keyboard events,
+//!   draw requests, and other terminal events
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -33,92 +29,94 @@ use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
 use super::TuiEvent;
 
-/// Result type produced by an event source.
-pub type EventResult = std::io::Result<Event>;
+/// Result type for terminal events.
+pub type TuiEventResult = std::io::Result<Event>;
 
-/// Abstraction over a source of terminal events. Allows swapping in a fake for tests.
-/// Value in production is [`CrosstermEventSource`].
-pub trait EventSource: Send + 'static {
-  fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<EventResult>>;
+/// Abstraction over terminal event sources.
+///
+/// Allows substituting a mock implementation for testing.
+pub trait TuiEventSource: Send + 'static {
+  fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<TuiEventResult>>;
 }
 
-/// Shared crossterm input state for all [`TuiEventStream`] instances. A single crossterm EventStream
-/// is reused so all streams still see the same input source.
+/// Shared manager for the terminal input stream.
 ///
-/// This intermediate layer enables dropping/recreating the underlying EventStream (pause/resume) without rebuilding consumers.
-pub struct EventBroker<S: EventSource = CrosstermEventSource> {
-  state: Mutex<EventBrokerState<S>>,
+/// Multiple parts of the app may need to read input, but crossterm only
+/// provides a single global stream. This broker mediates access and allows
+/// the stream to be temporarily disabled (paused) when needed.
+pub struct TuiEventBroker<S: TuiEventSource = CrosstermEventSource> {
+  state: Mutex<TuiEventBrokerState<S>>,
   resume_events_tx: watch::Sender<()>,
 }
 
-/// Tracks state of underlying [`EventSource`].
+/// Internal state tracking whether the input stream is active.
 #[allow(dead_code)]
-enum EventBrokerState<S: EventSource> {
-  Paused,     // Underlying event source (i.e., crossterm EventStream) dropped
-  Start,      // A new event source will be created on next poll
-  Running(S), // Event source is currently running
+enum TuiEventBrokerState<S: TuiEventSource> {
+  Paused,     // Stream is disabled
+  Start,      // Will create new stream on next use
+  Running(S), // Stream is active and being polled
 }
 
-impl<S: EventSource + Default> EventBrokerState<S> {
-  /// Return the running event source, starting it if needed; None when paused.
+impl<S: TuiEventSource + Default> TuiEventBrokerState<S> {
+  /// Get the active stream, initializing it if necessary.
   fn active_event_source_mut(&mut self) -> Option<&mut S> {
     match self {
-      EventBrokerState::Paused => None,
-      EventBrokerState::Start => {
-        *self = EventBrokerState::Running(S::default());
+      TuiEventBrokerState::Paused => None,
+      TuiEventBrokerState::Start => {
+        *self = TuiEventBrokerState::Running(S::default());
         match self {
-          EventBrokerState::Running(events) => Some(events),
-          EventBrokerState::Paused | EventBrokerState::Start => unreachable!(),
+          TuiEventBrokerState::Running(events) => Some(events),
+          TuiEventBrokerState::Paused | TuiEventBrokerState::Start => unreachable!(),
         }
       }
-      EventBrokerState::Running(events) => Some(events),
+      TuiEventBrokerState::Running(events) => Some(events),
     }
   }
 }
 
-impl<S: EventSource + Default> EventBroker<S> {
+impl<S: TuiEventSource + Default> TuiEventBroker<S> {
   pub fn new() -> Self {
     let (resume_events_tx, _resume_events_rx) = watch::channel(());
     Self {
-      state: Mutex::new(EventBrokerState::Start),
+      state: Mutex::new(TuiEventBrokerState::Start),
       resume_events_tx,
     }
   }
 
-  /// Drop the underlying event source
+  /// Temporarily disable the input stream.
   #[allow(dead_code)]
   pub fn pause_events(&self) {
     let mut state = self
       .state
       .lock()
       .unwrap_or_else(std::sync::PoisonError::into_inner);
-    *state = EventBrokerState::Paused;
+    *state = TuiEventBrokerState::Paused;
   }
 
-  /// Create a new instance of the underlying event source
+  /// Re-enable the input stream after a pause.
   #[allow(dead_code)]
   pub fn resume_events(&self) {
     let mut state = self
       .state
       .lock()
       .unwrap_or_else(std::sync::PoisonError::into_inner);
-    *state = EventBrokerState::Start;
+    *state = TuiEventBrokerState::Start;
     let _ = self.resume_events_tx.send(());
   }
 
-  /// Subscribe to a notification that fires whenever [`Self::resume_events`] is called.
+  /// Get a signal that fires when the stream is resumed.
   pub fn resume_events_rx(&self) -> watch::Receiver<()> {
     self.resume_events_tx.subscribe()
   }
 }
 
-impl<S: EventSource + Default> Default for EventBroker<S> {
+impl<S: TuiEventSource + Default> Default for TuiEventBroker<S> {
   fn default() -> Self {
     Self::new()
   }
 }
 
-/// Real crossterm-backed event source.
+/// Real terminal input using crossterm.
 pub struct CrosstermEventSource(pub crossterm::event::EventStream);
 
 impl Default for CrosstermEventSource {
@@ -127,30 +125,28 @@ impl Default for CrosstermEventSource {
   }
 }
 
-impl EventSource for CrosstermEventSource {
-  fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<EventResult>> {
+impl TuiEventSource for CrosstermEventSource {
+  fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<TuiEventResult>> {
     Pin::new(&mut self.get_mut().0).poll_next(cx)
   }
 }
 
-/// TuiEventStream is a struct for reading TUI events (draws and user input).
-/// Each instance has its own draw subscription (the draw channel is broadcast, so
-/// multiple receivers are fine), while crossterm input is funneled through a
-/// single shared [`EventBroker`] because crossterm uses a global stdin reader and
-/// does not support fan-out. Multiple TuiEventStream instances can exist during the app lifetime
-/// (for nested or sequential screens), but only one should be polled at a time,
-/// otherwise one instance can consume ("steal") input events and the other will miss them.
-pub struct TuiEventStream<S: EventSource + Default + Unpin = CrosstermEventSource> {
-  broker: Arc<EventBroker<S>>,
+/// Main event stream combining terminal input and draw requests.
+///
+/// Yields `TuiEvent::Key` for keyboard input, `TuiEvent::Draw` for
+/// redraw requests, and `TuiEvent::Paste` for clipboard pastes.
+/// Multiple instances can exist but only one should be polled at a time.
+pub struct TuiEventStream<S: TuiEventSource + Default + Unpin = CrosstermEventSource> {
+  broker: Arc<TuiEventBroker<S>>,
   draw_stream: BroadcastStream<()>,
   resume_stream: WatchStream<()>,
   terminal_focused: Arc<AtomicBool>,
   poll_draw_first: bool,
 }
 
-impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
+impl<S: TuiEventSource + Default + Unpin> TuiEventStream<S> {
   pub fn new(
-    broker: Arc<EventBroker<S>>,
+    broker: Arc<TuiEventBroker<S>>,
     draw_rx: broadcast::Receiver<()>,
     terminal_focused: Arc<AtomicBool>,
   ) -> Self {
@@ -164,10 +160,8 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
     }
   }
 
-  /// Poll the shared crossterm stream for the next mapped `TuiEvent`.
-  pub fn poll_crossterm_event(&mut self, cx: &mut Context<'_>) -> Poll<Option<TuiEvent>> {
-    // Some crossterm events map to None (e.g. FocusLost, mouse); loop so we keep polling
-    // until we return a mapped event, hit Pending, or see EOF/error.
+  /// Poll for terminal input events.
+  fn poll_crossterm_event(&mut self, cx: &mut Context<'_>) -> Poll<Option<TuiEvent>> {
     loop {
       let poll_result = {
         let mut state = self
@@ -179,7 +173,7 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
           Some(events) => events,
           None => {
             drop(state);
-            // Poll resume_stream so resume_events wakes a stream paused here
+            // Wait for resume signal while paused
             match Pin::new(&mut self.resume_stream).poll_next(cx) {
               Poll::Ready(Some(())) => continue,
               Poll::Ready(None) => return Poll::Ready(None),
@@ -190,12 +184,12 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
         match Pin::new(events).poll_next(cx) {
           Poll::Ready(Some(Ok(event))) => Some(event),
           Poll::Ready(Some(Err(_))) | Poll::Ready(None) => {
-            *state = EventBrokerState::Start;
+            *state = TuiEventBrokerState::Start;
             return Poll::Ready(None);
           }
           Poll::Pending => {
             drop(state);
-            // Poll resume_stream so resume_events can wake us even while waiting on stdin
+            // Also check for resume while waiting for input
             match Pin::new(&mut self.resume_stream).poll_next(cx) {
               Poll::Ready(Some(())) => continue,
               Poll::Ready(None) => return Poll::Ready(None),
@@ -211,8 +205,8 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
     }
   }
 
-  /// Poll the draw broadcast stream for the next draw event.
-  pub fn poll_draw_event(&mut self, cx: &mut Context<'_>) -> Poll<Option<TuiEvent>> {
+  /// Poll for draw notification events.
+  fn poll_draw_event(&mut self, cx: &mut Context<'_>) -> Poll<Option<TuiEvent>> {
     match Pin::new(&mut self.draw_stream).poll_next(cx) {
       Poll::Ready(Some(Ok(()))) => Poll::Ready(Some(TuiEvent::Draw)),
       Poll::Ready(Some(Err(BroadcastStreamRecvError::Lagged(_)))) => {
@@ -223,7 +217,7 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
     }
   }
 
-  /// Map a crossterm event to a [`TuiEvent`], skipping events we don't use.
+  /// Convert crossterm events to our event type, filtering out unused ones.
   fn map_crossterm_event(&mut self, event: Event) -> Option<TuiEvent> {
     match event {
       Event::Key(key_event) => Some(TuiEvent::Key(key_event)),
@@ -242,13 +236,13 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
   }
 }
 
-impl<S: EventSource + Default + Unpin> Unpin for TuiEventStream<S> {}
+impl<S: TuiEventSource + Default + Unpin> Unpin for TuiEventStream<S> {}
 
-impl<S: EventSource + Default + Unpin> Stream for TuiEventStream<S> {
+impl<S: TuiEventSource + Default + Unpin> Stream for TuiEventStream<S> {
   type Item = TuiEvent;
 
   fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-    // approximate fairness + no starvation via round-robin.
+    // Alternate between checking draw and input to ensure fairness
     let draw_first = self.poll_draw_first;
     self.poll_draw_first = !self.poll_draw_first;
 
