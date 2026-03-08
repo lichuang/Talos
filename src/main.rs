@@ -5,10 +5,11 @@ mod view;
 use anyhow::Result;
 use app::App;
 use crossterm::{
-  event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind},
+  event::{self, Event, KeyEventKind},
   execute,
   terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
+
 use ratatui::{
   Terminal,
   backend::{Backend, CrosstermBackend},
@@ -19,8 +20,8 @@ fn main() -> Result<()> {
   // Enable raw mode for terminal UI
   enable_raw_mode()?;
   let mut stdout = io::stdout();
-  // Enter alternate screen and enable mouse capture
-  execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+  // Enter alternate screen (mouse capture disabled to allow terminal's native selection)
+  execute!(stdout, EnterAlternateScreen)?;
   let backend = CrosstermBackend::new(stdout);
   let mut terminal = Terminal::new(backend)?;
 
@@ -32,11 +33,7 @@ fn main() -> Result<()> {
 
   // Restore terminal settings
   disable_raw_mode()?;
-  execute!(
-    terminal.backend_mut(),
-    LeaveAlternateScreen,
-    DisableMouseCapture
-  )?;
+  execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
   terminal.show_cursor()?;
 
   result
@@ -51,12 +48,17 @@ where
     // Draw the UI
     terminal.draw(|f| app.draw(f))?;
 
-    // Handle keyboard events
-    if let Event::Key(key) = event::read()? {
-      // Only handle key press events to avoid duplicate processing
-      if key.kind == KeyEventKind::Press {
-        app.handle_key(key);
+    // Handle events
+    match event::read()? {
+      Event::Key(key) => {
+        // Only handle key press events to avoid duplicate processing
+        if key.kind == KeyEventKind::Press {
+          app.handle_key(key);
+        }
       }
+      // Mouse events are disabled to allow terminal's native selection
+      // Event::Mouse(_) => {}
+      _ => {}
     }
 
     // Check if we should exit

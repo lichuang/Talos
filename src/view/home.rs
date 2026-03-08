@@ -1,4 +1,4 @@
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
   Frame,
   layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -161,11 +161,7 @@ impl View for HomeView {
       KeyCode::Esc => {
         data.should_exit = true;
       }
-      KeyCode::Char('d')
-        if key
-          .modifiers
-          .contains(crossterm::event::KeyModifiers::CONTROL) =>
-      {
+      KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
         data.should_exit = true;
       }
       KeyCode::Enter => {

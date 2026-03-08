@@ -303,8 +303,6 @@ impl View for ChatView {
         self.move_cursor_end();
       }
       KeyCode::Char(c) => {
-        // Handle Ctrl+C for copy, Ctrl+V for paste if needed
-        // For now, just insert the character if it's not a control char
         self.insert_char(c);
       }
       _ => {}
