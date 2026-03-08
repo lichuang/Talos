@@ -2,6 +2,7 @@ use crossterm::event::KeyEvent;
 use ratatui::Frame;
 
 use crate::app::AppData;
+use crate::tui::FrameRequester;
 
 pub mod chat;
 pub mod home;
@@ -28,4 +29,19 @@ pub trait View {
   /// * `f` - The frame to draw on
   /// * `data` - The application data (for accessing messages, etc.)
   fn draw(&self, f: &mut Frame, data: &AppData);
+
+  /// Called when a new frame is about to be rendered.
+  ///
+  /// Views can use this to update animation state or request additional frames.
+  /// The default implementation does nothing.
+  ///
+  /// # Arguments
+  /// * `frame_requester` - Use this to schedule additional frames if animation is needed
+  fn on_frame(&mut self, _frame_requester: &FrameRequester) {}
+
+  /// Set the frame requester for this view.
+  ///
+  /// Views should store this to request redraws for animations.
+  /// The default implementation does nothing.
+  fn set_frame_requester(&mut self, _frame_requester: FrameRequester) {}
 }

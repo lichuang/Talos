@@ -1,69 +1,74 @@
 mod app;
+mod tui;
 mod utils;
 mod view;
 
 use anyhow::Result;
 use app::App;
-use crossterm::{
-  event::{self, Event, KeyEventKind},
-  execute,
-  terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
-};
+use crossterm::event::KeyEventKind;
+use futures::StreamExt;
+use tui::{Tui, TuiEvent, TuiEventStream, init_terminal, restore_terminal};
 
-use ratatui::{
-  Terminal,
-  backend::{Backend, CrosstermBackend},
-};
-use std::io;
+#[tokio::main]
+async fn main() -> Result<()> {
+  // Initialize terminal
+  init_terminal()?;
 
-fn main() -> Result<()> {
-  // Enable raw mode for terminal UI
-  enable_raw_mode()?;
-  let mut stdout = io::stdout();
-  // Enter alternate screen (mouse capture disabled to allow terminal's native selection)
-  execute!(stdout, EnterAlternateScreen)?;
-  let backend = CrosstermBackend::new(stdout);
-  let mut terminal = Terminal::new(backend)?;
+  // Create TUI infrastructure
+  let mut tui = Tui::new()?;
 
   // Create app state
   let mut app = App::new();
 
-  // Run the main app loop
-  let result = run_app(&mut terminal, &mut app);
+  // Give the view a frame requester for animations
+  app.set_frame_requester(tui.frame_requester());
+
+  // Create event stream
+  let mut event_stream = tui.create_event_stream();
+
+  // Run the main event loop
+  let result = run_app(&mut tui, &mut app, &mut event_stream).await;
 
   // Restore terminal settings
-  disable_raw_mode()?;
-  execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-  terminal.show_cursor()?;
+  restore_terminal()?;
 
   result
 }
 
 /// Run the main application loop
-fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
-where
-  B::Error: Send + Sync + 'static,
-{
-  loop {
-    // Draw the UI
-    terminal.draw(|f| app.draw(f))?;
+async fn run_app(tui: &mut Tui, app: &mut App, event_stream: &mut TuiEventStream) -> Result<()> {
+  // Initial draw
+  tui.draw(|f| app.draw(f))?;
 
-    // Handle events
-    match event::read()? {
-      Event::Key(key) => {
+  // Process events from the stream
+  while let Some(event) = event_stream.next().await {
+    match event {
+      TuiEvent::Key(key) => {
         // Only handle key press events to avoid duplicate processing
         if key.kind == KeyEventKind::Press {
           app.handle_key(key);
         }
       }
-      // Mouse events are disabled to allow terminal's native selection
-      // Event::Mouse(_) => {}
-      _ => {}
+      TuiEvent::Paste(_text) => {
+        // Handle paste events - for now just insert as if typed
+        // This could be enhanced to handle multi-line paste specially
+        // TODO: Implement proper paste handling in View trait
+      }
+      TuiEvent::Draw => {
+        // Frame draw request - update animation state and redraw
+        let frame_requester = tui.frame_requester();
+        app.on_frame(&frame_requester);
+      }
     }
 
     // Check if we should exit
     if app.data.should_exit {
       return Ok(());
     }
+
+    // Redraw the UI
+    tui.draw(|f| app.draw(f))?;
   }
+
+  Ok(())
 }

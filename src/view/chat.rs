@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
   Frame,
@@ -9,8 +11,12 @@ use ratatui::{
 };
 
 use crate::app::AppData;
+use crate::tui::{FrameRequester, TARGET_FRAME_INTERVAL};
 use crate::utils::{char_display_width, string_display_width};
 use crate::view::View;
+
+/// Spinner animation frames (classic terminal loading)
+const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 /// Chat view state
 pub struct ChatView {
@@ -20,6 +26,14 @@ pub struct ChatView {
   pub cursor_position: usize,
   /// Prompt string (username@directory)
   pub prompt: String,
+  /// Frame requester for scheduling animations
+  frame_requester: Option<FrameRequester>,
+  /// Animation state
+  animation_enabled: bool,
+  /// Last time the spinner was updated
+  last_spinner_update: Instant,
+  /// Current spinner frame index
+  spinner_frame: usize,
 }
 
 impl ChatView {
@@ -30,6 +44,10 @@ impl ChatView {
       input: String::new(),
       cursor_position: 0,
       prompt,
+      frame_requester: None,
+      animation_enabled: true,
+      last_spinner_update: Instant::now(),
+      spinner_frame: 0,
     }
   }
 
@@ -44,7 +62,21 @@ impl ChatView {
       .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
       .unwrap_or_else(|| "~".to_string());
 
-    format!("{}@{}>", username, current_dir)
+    format!("{}@{}", username, current_dir)
+  }
+
+  /// Get the current spinner character based on animation state
+  fn current_spinner(&self) -> char {
+    if self.animation_enabled {
+      SPINNER_FRAMES[self.spinner_frame % SPINNER_FRAMES.len()]
+    } else {
+      '>'
+    }
+  }
+
+  /// Get the full prompt with spinner (for width calculation)
+  fn full_prompt(&self) -> String {
+    format!("{} {} ", self.prompt, self.current_spinner())
   }
 
   /// Get byte position from character position
@@ -190,7 +222,7 @@ impl ChatView {
 
   /// Calculate the number of lines needed to display prompt + text with given width
   fn calculate_input_line_count(&self, text: &str, available_width: u16) -> usize {
-    let prompt_width = Self::display_width(&self.prompt);
+    let prompt_width = Self::display_width(&self.full_prompt());
     Self::calculate_line_count_with_prefix(text, prompt_width, available_width)
   }
 
@@ -200,7 +232,7 @@ impl ChatView {
       return (0, 0);
     }
     let available = available_width as usize;
-    let prompt_width = Self::display_width(&self.prompt);
+    let prompt_width = Self::display_width(&self.full_prompt());
 
     let mut line = 0;
     let mut col = prompt_width; // Start after prompt
@@ -230,10 +262,16 @@ impl ChatView {
     (line, col)
   }
 
-  /// Render an input line (prompt + input) with wrapping
+  /// Render an input line (prompt + spinner + input) with wrapping
   fn render_input_line(&self, f: &mut Frame, area: Rect, input: &str) {
+    // Build prompt with styled spinner
+    // Prompt: green, Spinner: cyan (to make it stand out)
+    let spinner = self.current_spinner();
     let text = Text::from(vec![Line::from(vec![
       Span::styled(&self.prompt, Style::default().fg(Color::Green)),
+      Span::raw(" "),
+      Span::styled(spinner.to_string(), Style::default().fg(Color::Cyan)),
+      Span::raw(" "),
       Span::raw(input),
     ])]);
 
@@ -342,7 +380,7 @@ impl View for ChatView {
     constraints.push(Constraint::Length(input_height as u16));
 
     // Add remaining space
-    let prompt_width = Self::display_width(&self.prompt);
+    let prompt_width = Self::display_width(&self.full_prompt());
     let total_fixed_height: usize = data
       .messages
       .iter()
@@ -394,6 +432,35 @@ impl View for ChatView {
       let cursor_y = cursor_y.min(max_y.saturating_sub(1));
 
       f.set_cursor_position((cursor_x, cursor_y));
+    }
+  }
+
+  fn on_frame(&mut self, frame_requester: &FrameRequester) {
+    if !self.animation_enabled {
+      return;
+    }
+
+    // Update spinner animation
+    let now = Instant::now();
+    let elapsed = now.duration_since(self.last_spinner_update);
+
+    // Update spinner frame every 200ms (relaxed rotation)
+    const SPINNER_INTERVAL: Duration = Duration::from_millis(200);
+
+    if elapsed >= SPINNER_INTERVAL {
+      self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
+      self.last_spinner_update = now;
+    }
+
+    // Schedule next frame for smooth animation
+    frame_requester.schedule_frame_in(TARGET_FRAME_INTERVAL);
+  }
+
+  fn set_frame_requester(&mut self, frame_requester: FrameRequester) {
+    self.frame_requester = Some(frame_requester.clone());
+    // Start animation loop immediately
+    if self.animation_enabled {
+      frame_requester.schedule_frame_in(TARGET_FRAME_INTERVAL);
     }
   }
 }
